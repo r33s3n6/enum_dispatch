@@ -16,6 +16,7 @@ use crate::filter_attrs::FilterAttrs;
 pub struct EnumDispatchVariant {
     pub attrs: Vec<syn::Attribute>,
     pub ident: syn::Ident,
+    pub field_name: Option<syn::Ident>,
     pub field_attrs: Vec<syn::Attribute>,
     pub ty: syn::Type,
 }
@@ -25,24 +26,33 @@ impl syn::parse::Parse for EnumDispatchVariant {
     fn parse(input: syn::parse::ParseStream) -> syn::parse::Result<Self> {
         let attrs = input.call(syn::Attribute::parse_outer)?;
         let ident: syn::Ident = input.parse()?;
-        let (field_attrs, ty) = if input.peek(syn::token::Brace) {
-            unimplemented!("enum_dispatch variants cannot have braces for arguments");
+        let (field_attrs, field_name, ty) = if input.peek(syn::token::Brace) {
+            let input: syn::FieldsNamed = input.parse()?;
+            let mut fields = input.named.into_iter();
+            let field_1 = fields
+                .next()
+                .expect("Named enum_dispatch variants must have one named field");
+            if fields.next().is_some() {
+                panic!("Named enum_dispatch variants can only have one named field");
+            }
+            (field_1.attrs, field_1.ident, field_1.ty)
         } else if input.peek(syn::token::Paren) {
             let input: syn::FieldsUnnamed = input.parse()?;
-            let mut fields = input.unnamed.iter();
+            let mut fields = input.unnamed.into_iter();
             let field_1 = fields
                 .next()
                 .expect("Named enum_dispatch variants must have one unnamed field");
             if fields.next().is_some() {
                 panic!("Named enum_dispatch variants can only have one unnamed field");
             }
-            (field_1.attrs.clone(), field_1.ty.clone())
+            (field_1.attrs, None, field_1.ty)
         } else {
-            (vec![], into_type(ident.clone()))
+            (vec![], None, into_type(ident.clone()))
         };
         Ok(EnumDispatchVariant {
             attrs,
             ident,
+            field_name,
             field_attrs,
             ty,
         })
@@ -54,10 +64,19 @@ impl quote::ToTokens for EnumDispatchVariant {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         tokens.append_all(self.attrs.outer());
         self.ident.to_tokens(tokens);
-        syn::token::Paren::default().surround(tokens, |tokens| {
-            tokens.append_all(self.field_attrs.iter());
-            self.ty.to_tokens(tokens);
-        });
+        if let Some(field_name) = &self.field_name {
+            syn::token::Brace::default().surround(tokens, |tokens| {
+                tokens.append_all(self.field_attrs.iter());
+                field_name.to_tokens(tokens);
+                syn::token::Colon::default().to_tokens(tokens);
+                self.ty.to_tokens(tokens);
+            });
+        } else {
+            syn::token::Paren::default().surround(tokens, |tokens| {
+                tokens.append_all(self.field_attrs.iter());
+                self.ty.to_tokens(tokens);
+            });
+        }
     }
 }
 

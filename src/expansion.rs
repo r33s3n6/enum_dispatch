@@ -94,11 +94,16 @@ fn generate_from_impls(
             let variant_name = &variant.ident;
             let variant_type = &variant.ty;
             let attributes = &variant.attrs.iter().filter(use_attribute).collect::<Vec<_>>();
+            let body: syn::Expr = if let Some(field_name) = &variant.field_name {
+                syn::parse_quote! {#enumname::#variant_name{#field_name: v}}
+            } else {
+                syn::parse_quote! {#enumname::#variant_name(v)}
+            };
             let impl_block = quote! {
                 #(#attributes)*
                 impl #impl_generics ::core::convert::From<#variant_type> for #enumname #ty_generics #where_clause {
                     fn from(v: #variant_type) -> #enumname #ty_generics {
-                        #enumname::#variant_name(v)
+                        #body
                     }
                 }
             };
@@ -120,6 +125,11 @@ fn generate_try_into_impls(
             let variant_name = &variant.ident;
             let variant_type = &variant.ty;
             let attributes = &variant.attrs.iter().filter(use_attribute).collect::<Vec<_>>();
+            let pat: syn::Pat = if let Some(field_name) = &variant.field_name {
+                syn::parse_quote! {#enumname::#variant_name{#field_name: v}}
+            } else {
+                syn::parse_quote! {#enumname::#variant_name(v)}
+            };
 
             // Instead of making a specific match arm for each of the other variants we could just
             // use a catch-all wildcard, but doing it this way means we get nicer error messages
@@ -136,8 +146,15 @@ fn generate_try_into_impls(
                     let attrs = other.attrs.iter().filter(use_attribute);
                     quote! { #(#attrs)* }
                 });
-            let other_idents = other
+            let other_idents = other.clone()
                 .map(|other| other.ident.clone());
+            let other_bindings = other.map(|other| {
+                if other.field_name.is_some() {
+                    quote! {{..}}
+                } else {
+                    quote! {(..)}
+                }
+            });
             let from_str = other_idents.clone().map(|ident| ident.to_string());
             let to_str = core::iter::repeat(variant_name.to_string());
             let repeated = core::iter::repeat(&enumname);
@@ -148,9 +165,9 @@ fn generate_try_into_impls(
                     type Error = &'static str;
                     fn try_into(self) -> ::core::result::Result<#variant_type, <Self as ::core::convert::TryInto<#variant_type>>::Error> {
                         match self {
-                            #enumname::#variant_name(v) => {Ok(v)},
+                            #pat => {Ok(v)},
                             #(  #other_attributes
-                                #repeated::#other_idents(v) => {
+                                #repeated::#other_idents#other_bindings => {
                                 Err(concat!("Tried to convert variant ",
                                             #from_str, " to ", #to_str))}    ),*
                         }
@@ -221,13 +238,13 @@ fn create_trait_fn_call(
     trait_method: &syn::TraitItemFn,
     trait_generics: &syn::TypeGenerics,
     trait_name: &syn::Ident,
+    field_name: &syn::Ident,
 ) -> syn::Expr {
     let trait_args = trait_method.to_owned().sig.inputs;
     let (method_type, mut args) = extract_fn_args(trait_args);
 
-    // Insert FIELDNAME at the beginning of the argument list for UCFS-style method calling
-    let explicit_self_arg = syn::Ident::new(FIELDNAME, trait_method.span());
-    args.insert(0, plain_identifier_expr(explicit_self_arg));
+    // Insert field_name at the beginning of the argument list for UCFS-style method calling
+    args.insert(0, plain_identifier_expr(field_name.clone()));
 
     let mut call = syn::Expr::from(syn::ExprCall {
         attrs: vec![],
@@ -292,8 +309,6 @@ fn create_match_expr(
     enum_name: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
 ) -> syn::Expr {
-    let trait_fn_call = create_trait_fn_call(trait_method, trait_generics, trait_name);
-
     let is_self_return = if let syn::ReturnType::Type(_, returntype) = &trait_method.sig.output {
         match returntype.as_ref() {
             syn::Type::Path(p) => {
@@ -313,7 +328,12 @@ fn create_match_expr(
     let match_arms = enumvariants
         .iter()
         .map(|variant| {
-            let mut call = trait_fn_call.to_owned();
+            let field_name = variant
+                .field_name
+                .clone()
+                .unwrap_or_else(|| syn::Ident::new(FIELDNAME, variant.span()));
+            let mut call =
+                create_trait_fn_call(trait_method, trait_generics, trait_name, &field_name);
 
             if is_self_return {
                 let variant_type = &variant.ty;
@@ -332,10 +352,10 @@ fn create_match_expr(
                 .collect::<Vec<_>>();
             syn::Arm {
                 attrs,
-                pat: {
-                    let fieldname = syn::Ident::new(FIELDNAME, variant.span());
-                    syn::parse_quote! {#enum_name::#variant_name(#fieldname)}
-                },
+                pat: variant.field_name.as_ref().map_or_else(
+                    || syn::parse_quote! {#enum_name::#variant_name(#field_name)},
+                    |_| syn::parse_quote! {#enum_name::#variant_name{#field_name}},
+                ),
                 guard: None,
                 fat_arrow_token: Default::default(),
                 body: Box::new(call),
