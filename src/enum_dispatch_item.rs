@@ -74,26 +74,36 @@ impl ::std::convert::From<EnumDispatchItem> for syn::ItemEnum {
         use ::std::iter::FromIterator;
         let variants: Vec<syn::Variant> = item
             .variants
-            .iter()
-            .map(|variant: &EnumDispatchVariant| syn::Variant {
-                attrs: variant.attrs.to_owned(),
-                ident: variant.ident.to_owned(),
-                fields: syn::Fields::Unnamed(syn::FieldsUnnamed {
-                    paren_token: Default::default(),
-                    unnamed: {
-                        let mut punctuated = syn::punctuated::Punctuated::new();
-                        punctuated.push(syn::Field {
-                            attrs: variant.field_attrs.to_owned(),
-                            vis: syn::Visibility::Inherited,
-                            ident: None,
-                            colon_token: Default::default(),
-                            ty: variant.ty.to_owned(),
-                            mutability: syn::FieldMutability::None,
-                        });
-                        punctuated
-                    },
-                }),
-                discriminant: None,
+            .into_iter()
+            .map(|variant: EnumDispatchVariant| {
+                let is_named = variant.field_name.is_some();
+                let mut punctuated = syn::punctuated::Punctuated::new();
+                punctuated.push(syn::Field {
+                    attrs: variant.field_attrs,
+                    vis: syn::Visibility::Inherited,
+                    ident: variant.field_name,
+                    colon_token: Default::default(),
+                    ty: variant.ty,
+                    mutability: syn::FieldMutability::None,
+                });
+                let fields = if is_named {
+                    syn::Fields::Named(syn::FieldsNamed {
+                        brace_token: Default::default(),
+                        named: punctuated,
+                    })
+                } else {
+                    syn::Fields::Unnamed(syn::FieldsUnnamed {
+                        paren_token: Default::default(),
+                        unnamed: punctuated,
+                    })
+                };
+
+                syn::Variant {
+                    attrs: variant.attrs,
+                    ident: variant.ident,
+                    fields,
+                    discriminant: None,
+                }
             })
             .collect();
         syn::ItemEnum {
