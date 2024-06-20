@@ -342,12 +342,15 @@ mod enum_dispatch_variant;
 mod expansion;
 /// Convenience trait for token parsing.
 mod filter_attrs;
+/// To manage some implementation skips.
+mod skip_implementation;
 /// Codifies the kinds of generic arguments supported in an `#[enum_dispatch(T<...>)]` attribute.
 mod supported_generics;
 /// Convenience methods for constructing `syn` types.
 mod syn_utils;
 
 use crate::expansion::add_enum_impls;
+use crate::skip_implementation::Skip;
 use crate::supported_generics::{convert_to_supported_generic, num_supported_generics};
 
 /// Annotating a trait or enum definition with an `#[enum_dispatch]` attribute will register it
@@ -389,6 +392,7 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
     // If one is not cached yet, the link will be pushed into the cache, and impl generation will
     // be deferred until the missing definition is encountered.
     // For now, we assume it is already cached.
+    let mut skip = Skip::default();
     if !attr.is_empty() {
         let attr_parse_result = syn::parse2::<enum_dispatch_arg_list::EnumDispatchArgList>(attr)
             .expect("Could not parse arguments to `#[enum_dispatch(...)]`.")
@@ -402,6 +406,9 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ident: attr_name,
                     arguments: attr_generics
                 } = p.segments.last().unwrap();
+
+                skip.parse_segment(&attr_name);
+
                 let attr_generics = match attr_generics.clone() {
                     syn::PathArguments::None => vec![],
                     syn::PathArguments::AngleBracketed(args) => {
@@ -443,7 +450,7 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
             let additional_enums =
                 cache::fulfilled_by_trait(&traitdef.ident, supported_generics);
             for enumdef in additional_enums {
-                expanded.append_all(add_enum_impls(enumdef, traitdef.clone()));
+                expanded.append_all(add_enum_impls(enumdef, traitdef.clone(), &skip));
             }
         }
         attributed_parser::ParsedItem::EnumDispatch(enumdef) => {
@@ -451,7 +458,7 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
             let additional_traits =
                 cache::fulfilled_by_enum(&enumdef.ident, supported_generics);
             for traitdef in additional_traits {
-                expanded.append_all(add_enum_impls(enumdef.clone(), traitdef));
+                expanded.append_all(add_enum_impls(enumdef.clone(), traitdef, &skip));
             }
         }
     }
