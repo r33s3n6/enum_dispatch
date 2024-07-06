@@ -357,6 +357,32 @@ fn create_match_expr(
     })
 }
 
+#[cfg(not(feature = "auto_enums"))]
+fn auto_enum_bounds(_tit: &syn::TypeImplTrait) -> syn::Attribute {
+    panic!("Return Position Impl Trait in Trait requires the \"auto_enums\" feature")
+}
+
+#[cfg(feature = "auto_enums")]
+fn auto_enum_bounds(tit: &syn::TypeImplTrait) -> syn::Attribute {
+        let mut bounds = Vec::new();
+        for tpb in tit.bounds.iter() {
+            if let syn::TypeParamBound::Trait(tb) = tpb {
+                // auto_enums only wants the ident, not its path arguments
+                bounds.push(tb.path.segments.last().unwrap().ident.clone());
+            }
+        }
+        syn::Attribute {
+            pound_token: Default::default(),
+            style: syn::AttrStyle::Outer,
+            bracket_token: Default::default(),
+            meta: syn::Meta::List(syn::MetaList {
+                path: syn::parse_str("::auto_enums::auto_enum").unwrap(),
+                delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                tokens: quote!(#(#bounds),*)
+            })
+        }
+}
+
 /// Builds an implementation of the given trait function for the given enum type.
 fn create_trait_match(
     trait_item: syn::TraitItem,
@@ -385,6 +411,12 @@ fn create_trait_match(
                 bracket_token: Default::default(),
                 meta: syn::Meta::Path(syn::parse_str("inline").unwrap()),
             });
+            // If the function uses RPITIT, we need auto_enum
+            if let syn::ReturnType::Type(_, ty) = &trait_method.sig.output {
+                if let syn::Type::ImplTrait(tit) = &**ty {
+                    impl_attrs.push(auto_enum_bounds(tit));
+                }
+            }
 
             syn::ImplItem::Fn(syn::ImplItemFn {
                 attrs: impl_attrs,
