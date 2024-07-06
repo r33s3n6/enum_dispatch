@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.14
+
+- Added suuport for trait methods that use RPITIT (Return Position Impl Trait
+  in Trait).  This requires the `auto_enums` crate feature.  The caller must
+  include `auto_enums` in their Cargo.toml file. (#75, !40)
+
 ## 0.3.13
 
 - Fix namespace collision with imports named `core` (!35)
