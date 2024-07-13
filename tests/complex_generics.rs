@@ -74,8 +74,10 @@ mod attribute_argument_on_enum {
         ];
 
         storages[0].store(String::from("key1"), String::from("value"));
+        assert_ne!(storages[0].get(&String::from("key1")), None);   // NONE but should be Some 
         assert_eq!(storages[0].get(&String::from("key2")), None);
         storages[0].update_value(&String::from("key1"), |value| format!("{} + 1", value));
+        assert_ne!(storages[0].get(&String::from("key1")), None);  // NONE but should be Some 
     }
 }
 
@@ -151,8 +153,10 @@ mod attribute_argument_on_trait {
         ];
 
         storages[0].store(String::from("key1"), String::from("value"));
+        assert_ne!(storages[0].get(&String::from("key1")), None);   // NONE but should be Some 
         assert_eq!(storages[0].get(&String::from("key2")), None);
         storages[0].update_value(&String::from("key1"), |value| format!("{} + 1", value));
+        assert_ne!(storages[0].get(&String::from("key1")), None);  // NONE but should be Some 
     }
 }
 
