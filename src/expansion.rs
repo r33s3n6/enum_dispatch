@@ -61,7 +61,7 @@ pub fn add_enum_impls(
         }
 
         let try_into_impls =
-            generate_try_into_impls(&enum_def.ident, &variants, &trait_impl.generics);
+            generate_try_into_impls(&enum_def.ident, &variants, &enum_def.generics);
         for try_into_impl in try_into_impls.iter() {
             try_into_impl.to_tokens(&mut impls);
         }
