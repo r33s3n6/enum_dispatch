@@ -22,9 +22,10 @@ pub fn add_enum_impls(
     let traitname = traitdef.ident;
     let traitfns = traitdef.items;
 
-    let (generic_impl_constraints, enum_type_generics, where_clause) =
-        enum_def.generics.split_for_impl();
     let (_, trait_type_generics, _) = traitdef.generics.split_for_impl();
+    let (enum_impl_generics, enum_type_generics, enum_where) = enum_def.generics.split_for_impl();
+    let new = unionize_generics(&enum_def.generics, &traitdef.generics);
+    let (generic_impl_constraints, _, where_clause) = new.split_for_impl();
 
     let enumname = &enum_def.ident.to_owned();
     let trait_impl = quote! {
@@ -61,7 +62,7 @@ pub fn add_enum_impls(
         }
 
         let try_into_impls =
-            generate_try_into_impls(&enum_def.ident, &variants, &trait_impl.generics);
+            generate_try_into_impls(&enum_def.ident, &variants, &enum_def.generics);
         for try_into_impl in try_into_impls.iter() {
             try_into_impl.to_tokens(&mut impls);
         }
@@ -73,6 +74,40 @@ pub fn add_enum_impls(
 
     trait_impl.to_tokens(&mut impls);
     impls
+}
+
+fn unionize_generics<'a>(
+    enum_generics: &syn::Generics,
+    trait_generics: &syn::Generics,
+) -> syn::Generics {
+    // Combine generic impl constraints by ensuring no duplicates
+    let mut new = enum_generics.clone();
+    let mut enum_params = enum_generics.params.clone().into_iter();
+    let trait_params = trait_generics.params.iter().cloned();
+    new.params.extend(
+        trait_params
+            .filter(|trait_param| !enum_params.any(|enum_param| enum_param == *trait_param)),
+    );
+    let (_, _, trait_where_clause) = trait_generics.split_for_impl();
+
+    // Combine where clauses by ensuring no duplicates
+    if let Some(where_clause) = &mut new.where_clause {
+        if let Some(trait_where) = &trait_where_clause {
+            for trait_predicate in &trait_where.predicates {
+                if !where_clause
+                    .predicates
+                    .iter()
+                    .any(|enum_predicate| enum_predicate == trait_predicate)
+                {
+                    where_clause.predicates.push(trait_predicate.clone());
+                }
+            }
+        }
+    } else {
+        new.where_clause = trait_where_clause.cloned();
+    }
+
+    new
 }
 
 /// Returns whether or not an attribute from an enum variant should be applied to other usages of
