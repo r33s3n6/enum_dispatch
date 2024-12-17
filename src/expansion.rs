@@ -148,10 +148,10 @@ fn generate_try_into_impls(
                     type Error = &'static str;
                     fn try_into(self) -> ::core::result::Result<#variant_type, <Self as ::core::convert::TryInto<#variant_type>>::Error> {
                         match self {
-                            #enumname::#variant_name(v) => {Ok(v)},
+                            #enumname::#variant_name(v) => {::core::result::Result::Ok(v)},
                             #(  #other_attributes
                                 #repeated::#other_idents(v) => {
-                                Err(concat!("Tried to convert variant ",
+                                    ::core::result::Result::Err(concat!("Tried to convert variant ",
                                             #from_str, " to ", #to_str))}    ),*
                         }
                     }
@@ -263,7 +263,7 @@ fn create_trait_fn_call(
                 let method_turbofish = method_type_generics.as_turbofish();
 
                 Box::new(
-                    syn::parse_quote! { #trait_name#trait_turbofish::#method_name#method_turbofish },
+                    syn::parse_quote! { #trait_name #trait_turbofish::#method_name #method_turbofish },
                 )
             }
         },
