@@ -1,4 +1,4 @@
-use custom_derive::custom_derive;
+use macro_attr::{macro_attr, macro_attr_impl};
 use enum_derive::{enum_derive_util, EnumFromInner, EnumInnerAsTrait};
 use enum_dispatch::enum_dispatch;
 
@@ -19,9 +19,9 @@ pub enum EnumDispatched {
     One,
 }
 
-custom_derive! {
-    #[derive(EnumFromInner)]
-    #[derive(EnumInnerAsTrait(pub inner -> &dyn ReturnsValue))]
+macro_attr! {
+    #[derive(EnumFromInner!)]
+    #[derive(EnumInnerAsTrait!(pub inner -> &dyn ReturnsValue))]
     pub enum DynamicDispatched {
         Zero(Zero),
         One(One),
