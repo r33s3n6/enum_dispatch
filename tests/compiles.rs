@@ -178,6 +178,6 @@ fn main() {
     assert!(d_from_c.is_err());
     assert_eq!(
         d_from_c.err().unwrap(),
-        "Tried to convert variant C to LetterD"
+        "failed to convert enum to requested variant"
     );
 }

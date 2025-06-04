@@ -115,45 +115,42 @@ fn generate_try_into_impls(
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     enumvariants
         .iter()
-        .enumerate()
-        .map(|(i, variant)| {
+        .map(|variant| {
             let variant_name = &variant.ident;
             let variant_type = &variant.ty;
             let attributes = &variant.attrs.iter().filter(use_attribute).collect::<Vec<_>>();
 
-            // Instead of making a specific match arm for each of the other variants we could just
-            // use a catch-all wildcard, but doing it this way means we get nicer error messages
-            // that say what the wrong variant is. It also degrades nicely in the case of a single
-            // variant enum so we don't get an unsightly "unreachable pattern" warning.
-            let other = enumvariants
-                .iter()
-                .enumerate()
-                .filter_map(
-                    |(j, other)| if i != j { Some(other) } else { None });
-            let other_attributes = other
-                .clone()
-                .map(|other| {
-                    let attrs = other.attrs.iter().filter(use_attribute);
-                    quote! { #(#attrs)* }
-                });
-            let other_idents = other
-                .map(|other| other.ident.clone());
-            let from_str = other_idents.clone().map(|ident| ident.to_string());
-            let to_str = core::iter::repeat(variant_name.to_string());
-            let repeated = core::iter::repeat(&enumname);
+            // We used to generate a specific match arm for every *other* variant so we could
+            // include the exact variant name in the error message. Unfortunately this resulted in
+            // O(n²) generated code size for an n-variant enum, because each generated impl
+            // repeated the full match statement.  Instead, we now use a single wildcard arm that
+            // returns a generic error.  This reduces code size to O(n).
+
+            let has_multiple_variants = enumvariants.len() > 1;
+
+            // Construct the body of the `match` expression.  For a single-variant enum we omit
+            // the wildcard arm entirely so we don't trigger the `unreachable_patterns` lint.
+            let match_body = if has_multiple_variants {
+                quote! {
+                    match self {
+                        #enumname::#variant_name(v) => Ok(v),
+                        _ => Err("failed to convert enum to requested variant"),
+                    }
+                }
+            } else {
+                quote! {
+                    match self {
+                        #enumname::#variant_name(v) => Ok(v),
+                    }
+                }
+            };
 
             let impl_block = quote! {
                 #(#attributes)*
                 impl #impl_generics ::core::convert::TryInto<#variant_type> for #enumname #ty_generics #where_clause {
                     type Error = &'static str;
                     fn try_into(self) -> ::core::result::Result<#variant_type, <Self as ::core::convert::TryInto<#variant_type>>::Error> {
-                        match self {
-                            #enumname::#variant_name(v) => {Ok(v)},
-                            #(  #other_attributes
-                                #repeated::#other_idents(v) => {
-                                Err(concat!("Tried to convert variant ",
-                                            #from_str, " to ", #to_str))}    ),*
-                        }
+                        #match_body
                     }
                 }
             };

@@ -82,7 +82,10 @@ fn main() {
 
     let b_from_c: Result<B, _> = c.try_into();
     assert!(b_from_c.is_err());
-    assert_eq!(b_from_c.err().unwrap(), "Tried to convert variant C to B");
+    assert_eq!(
+        b_from_c.err().unwrap(),
+        "failed to convert enum to requested variant"
+    );
 
     let a_from_a: Result<A, _> = a.try_into();
     assert!(a_from_a.is_ok());
@@ -103,7 +106,7 @@ fn main() {
     assert!(b_from_c_sl.is_err());
     assert_eq!(
         b_from_c_sl.err().unwrap(),
-        "Tried to convert variant C to B"
+        "failed to convert enum to requested variant"
     );
 
     let a_from_a_sl: Result<A, _> = a_sl.try_into();
