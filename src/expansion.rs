@@ -161,6 +161,23 @@ fn generate_try_into_impls(
         }).collect()
 }
 
+fn is_impl_future_return_type(return_type: &syn::ReturnType) -> bool {
+    if let syn::ReturnType::Type(_, ty) = return_type {
+        if let syn::Type::ImplTrait(impl_trait) = ty.as_ref() {
+            return impl_trait.bounds.iter().any(|bound| {
+                if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                    trait_bound.path.segments.iter().any(|segment| {
+                        segment.ident == "Future"
+                    })
+                } else {
+                    false
+                }
+            });
+        }
+    }
+    false
+}
+
 /// Used to keep track of the 'self' arguments in a trait's function signature.
 /// Static -> no 'self' arguments
 /// ByReference -> &self, &mut self
@@ -271,7 +288,7 @@ fn create_trait_fn_call(
         args,
     });
 
-    if trait_method.sig.asyncness.is_some() {
+    if trait_method.sig.asyncness.is_some() || is_impl_future_return_type(&trait_method.sig.output) {
         call = syn::Expr::from(syn::ExprAwait {
             attrs: Default::default(),
             base: Box::new(call),
@@ -378,7 +395,6 @@ fn create_trait_match(
             );
 
             let mut impl_attrs = trait_method.attrs.clone();
-            // Inline impls - #[inline] is never already specified in a trait method signature
             impl_attrs.push(syn::Attribute {
                 pound_token: Default::default(),
                 style: syn::AttrStyle::Outer,
@@ -386,11 +402,44 @@ fn create_trait_match(
                 meta: syn::Meta::Path(syn::parse_str("inline").unwrap()),
             });
 
+            let mut impl_sig = trait_method.sig.clone();
+            
+            if is_impl_future_return_type(&trait_method.sig.output) {
+                impl_sig.asyncness = Some(Default::default());
+                
+                if let syn::ReturnType::Type(arrow, ty) = &impl_sig.output {
+                    if let syn::Type::ImplTrait(impl_trait) = ty.as_ref() {
+                        for bound in &impl_trait.bounds {
+                            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                                if trait_bound.path.segments.iter().any(|seg| seg.ident == "Future") {
+                                    for seg in &trait_bound.path.segments {
+                                        if seg.ident == "Future" {
+                                            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                                                for arg in &args.args {
+                                                    if let syn::GenericArgument::AssocType(assoc) = arg {
+                                                        if assoc.ident == "Output" {
+                                                            impl_sig.output = syn::ReturnType::Type(*arrow, Box::new(assoc.ty.clone()));
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             syn::ImplItem::Fn(syn::ImplItemFn {
                 attrs: impl_attrs,
                 vis: syn::Visibility::Inherited,
                 defaultness: None,
-                sig: trait_method.sig,
+                sig: impl_sig,
                 block: syn::Block {
                     brace_token: Default::default(),
                     stmts: vec![syn::Stmt::Expr(match_expr, None)],
