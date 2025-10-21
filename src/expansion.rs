@@ -283,6 +283,16 @@ fn create_trait_fn_call(
     call
 }
 
+/// Describes the kind of return type a trait method has.
+/// SelfType -> Self.
+/// MappableSelfType -> A mappable type containing Self, e.g. Option<Self> or Result<Self, E>.
+/// Other -> Just an ordinary return type.
+enum MethodReturnType {
+    SelfType,
+    MappableSelfType,
+    Other,
+}
+
 /// Constructs a match expression that matches on all variants of the specified enum, creating a
 /// binding to their single field and calling the provided trait method on each.
 fn create_match_expr(
@@ -294,20 +304,7 @@ fn create_match_expr(
 ) -> syn::Expr {
     let trait_fn_call = create_trait_fn_call(trait_method, trait_generics, trait_name);
 
-    let is_self_return = if let syn::ReturnType::Type(_, returntype) = &trait_method.sig.output {
-        match returntype.as_ref() {
-            syn::Type::Path(p) => {
-                if let Some(i) = p.path.get_ident() {
-                    i.to_string() == "Self"
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    } else {
-        false
-    };
+    let return_type = extract_return_type(trait_method);
 
     // Creates a Vec containing a match arm for every enum variant
     let match_arms = enumvariants
@@ -315,13 +312,22 @@ fn create_match_expr(
         .map(|variant| {
             let mut call = trait_fn_call.to_owned();
 
-            if is_self_return {
-                let variant_type = &variant.ty;
-                let from_call: syn::ExprCall = syn::parse_quote! {
-                    <Self as ::core::convert::From::<#variant_type>>::from(#call)
-                };
-                call = syn::Expr::from(from_call);
-            }
+            match return_type {
+                MethodReturnType::SelfType => {
+                    let variant_type = &variant.ty;
+                    let from_call: syn::ExprCall = syn::parse_quote! {
+                        <Self as ::core::convert::From::<#variant_type>>::from(#call)
+                    };
+                    call = syn::Expr::from(from_call);
+                }
+                MethodReturnType::MappableSelfType => {
+                    let from_call: syn::ExprMethodCall = syn::parse_quote! {
+                        #call.map(::core::convert::Into::into)
+                    };
+                    call = syn::Expr::from(from_call);
+                }
+                MethodReturnType::Other => {}
+            };
 
             let variant_name = &variant.ident;
             let attrs = variant
@@ -464,4 +470,51 @@ fn identify_signature_arguments(sig: &mut syn::Signature) {
         // `self` arguments will never need to be renamed.
         syn::FnArg::Receiver(..) => (),
     });
+}
+
+/// Analyzes the return type of a trait method, returning whether or not it is `Self`, a mappable
+/// type containing `Self`, or something else.
+fn extract_return_type(trait_method: &syn::TraitItemFn) -> MethodReturnType {
+    if let syn::ReturnType::Type(_, returntype) = &trait_method.sig.output {
+        if let syn::Type::Path(p) = returntype.as_ref() {
+            if p.path.is_ident("Self") {
+                return MethodReturnType::SelfType;
+            } else if is_mappable_self(&p.path) {
+                return MethodReturnType::MappableSelfType;
+            }
+        }
+    }
+    MethodReturnType::Other
+}
+
+/// Determines whether the provided path is a mappable type containing `Self`, e.g.
+/// Robust to different path styles like `std::option::Option<Self>` vs core::option::Option<Self>.
+fn is_mappable_self(path: &syn::Path) -> bool {
+    const MATCHES: [&str; 6] = [
+        "Option",
+        "std::option::Option",
+        "core::option::Option",
+        "Result",
+        "std::result::Result",
+        "core::result::Result",
+    ];
+
+    let path_str = path
+        .segments
+        .iter()
+        .map(|seg| seg.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+
+    if !MATCHES.contains(&path_str.as_str()) {
+        return false;
+    }
+
+    let last_arg = path.segments.last().unwrap();
+    if let syn::PathArguments::AngleBracketed(args) = &last_arg.arguments {
+        if let Some(syn::GenericArgument::Type(syn::Type::Path(ok_type_path))) = args.args.first() {
+            return ok_type_path.path.is_ident("Self");
+        }
+    }
+    false
 }
