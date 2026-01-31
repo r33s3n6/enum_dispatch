@@ -1,6 +1,7 @@
 //! Provides a utility for generating `enum_dispatch` impl blocks given `EnumDispatchItem` and
 //! `syn::ItemTrait` definitions.
 use crate::cache;
+use proc_macro2::Span;
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
 
@@ -226,7 +227,7 @@ fn create_trait_fn_call(
     let (method_type, mut args) = extract_fn_args(trait_args);
 
     // Insert FIELDNAME at the beginning of the argument list for UCFS-style method calling
-    let explicit_self_arg = syn::Ident::new(FIELDNAME, trait_method.span());
+    let explicit_self_arg = syn::Ident::new(FIELDNAME, Span::mixed_site());
     args.insert(0, plain_identifier_expr(explicit_self_arg));
 
     let mut call = syn::Expr::from(syn::ExprCall {
@@ -263,7 +264,7 @@ fn create_trait_fn_call(
                 let method_turbofish = method_type_generics.as_turbofish();
 
                 Box::new(
-                    syn::parse_quote! { #trait_name#trait_turbofish::#method_name#method_turbofish },
+                    syn::parse_quote! { #trait_name #trait_turbofish::#method_name #method_turbofish },
                 )
             }
         },
@@ -333,7 +334,7 @@ fn create_match_expr(
             syn::Arm {
                 attrs,
                 pat: {
-                    let fieldname = syn::Ident::new(FIELDNAME, variant.span());
+                    let fieldname = syn::Ident::new(FIELDNAME, Span::mixed_site());
                     syn::parse_quote! {#enum_name::#variant_name(#fieldname)}
                 },
                 guard: None,
