@@ -192,3 +192,138 @@ impl Credentials for SimpleCreds {
         String::from("D0nTb3f0ol3D-Thi51Sn0tAR34al4P1kEY")
     }
 }
+
+mod different_generic_names {
+    use enum_dispatch::enum_dispatch;
+    use std::marker::PhantomData;
+
+    trait Pool: 'static {}
+
+    struct LogicalExpr<P: Pool> {
+        exprs: Vec<Expr<P>>,
+    }
+
+    struct LiteralExpr<P: Pool> {
+        value: String,
+        phantom: PhantomData<fn(&mut P)>,
+    }
+
+    trait HasNodeRef {
+        type NodeRef<'a>
+        where
+            Self: 'a;
+    }
+
+    trait AsNodeRef<H: HasNodeRef> {
+        fn as_node_ref(&self) -> Option<H::NodeRef<'_>> {
+            None
+        }
+    }
+
+    trait Visitor<H: HasNodeRef> {
+        fn visit<'a>(&self, node_ref: H::NodeRef<'a>);
+    }
+
+    struct Driver<'a, H: HasNodeRef, V: Visitor<H>> {
+        visitor: &'a V,
+        phantom: PhantomData<fn(&mut H)>,
+    }
+
+    impl<'a, H: HasNodeRef, V: Visitor<H>> Driver<'a, H, V> {
+        pub fn walk_node<N: WalkChildren<H> + AsNodeRef<H>>(&mut self, n: &N) -> bool {
+            true
+        }
+    }
+
+    #[enum_dispatch]
+    trait WalkChildren<H: HasNodeRef> {
+        fn walk_children<V: Visitor<H>>(&self, d: &mut Driver<H, V>) -> bool;
+    }
+
+    enum NodeRef<'a, P: Pool> {
+        Expr(&'a Expr<P>),
+    }
+
+    struct HasNodeRefTag<P: Pool> {
+        phantom: PhantomData<fn(&mut P)>,
+    }
+    impl<P: Pool> HasNodeRef for HasNodeRefTag<P> {
+        type NodeRef<'a> = NodeRef<'a, P>;
+    }
+
+    impl<P: Pool> WalkChildren<HasNodeRefTag<P>> for LogicalExpr<P> {
+        fn walk_children<V: Visitor<HasNodeRefTag<P>>>(
+            &self,
+            d: &mut Driver<HasNodeRefTag<P>, V>,
+        ) -> bool {
+            for expr in &self.exprs {
+                if !d.walk_node(expr) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    impl<P: Pool> WalkChildren<HasNodeRefTag<P>> for LiteralExpr<P> {
+        fn walk_children<V: Visitor<HasNodeRefTag<P>>>(
+            &self,
+            _d: &mut Driver<HasNodeRefTag<P>, V>,
+        ) -> bool {
+            true
+        }
+    }
+
+    #[enum_dispatch(WalkChildren<HasNodeRefTag<P>>)]
+    enum Expr<P: Pool> {
+        Logical(LogicalExpr<P>),
+        Literal(LiteralExpr<P>),
+    }
+
+    impl<P: Pool> AsNodeRef<HasNodeRefTag<P>> for Expr<P> {
+        fn as_node_ref(&self) -> Option<NodeRef<'_, P>> {
+            Some(NodeRef::Expr(self))
+        }
+    }
+
+    struct DefaultPool;
+    impl Pool for DefaultPool {}
+
+    struct DefaultVisitor;
+    impl Visitor<HasNodeRefTag<DefaultPool>> for DefaultVisitor {
+        fn visit<'a>(&self, _node_ref: NodeRef<'a, DefaultPool>) {}
+    }
+
+    #[test]
+    fn test_different_generic_names() {
+        let logical_expr: LogicalExpr<DefaultPool> = LogicalExpr {
+            exprs: vec![
+                LiteralExpr {
+                    value: String::from("literal"),
+                    phantom: Default::default(),
+                }
+                .into(),
+                LogicalExpr {
+                    exprs: vec![LiteralExpr {
+                        value: String::from("literal"),
+                        phantom: Default::default(),
+                    }
+                    .into()],
+                }
+                .into(),
+            ],
+        };
+        let literal_expr: LiteralExpr<DefaultPool> = LiteralExpr {
+            value: String::from("literal"),
+            phantom: Default::default(),
+        };
+
+        let mut driver = Driver {
+            visitor: &DefaultVisitor,
+            phantom: Default::default(),
+        };
+
+        assert!(logical_expr.walk_children(&mut driver));
+        assert!(literal_expr.walk_children(&mut driver));
+    }
+}

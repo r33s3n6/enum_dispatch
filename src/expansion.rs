@@ -1,9 +1,16 @@
 //! Provides a utility for generating `enum_dispatch` impl blocks given `EnumDispatchItem` and
 //! `syn::ItemTrait` definitions.
-use crate::cache;
-use proc_macro2::Span;
-use quote::{quote, ToTokens};
+use std::collections::HashMap;
+
+// use crate::cache;
+use proc_macro2::{Group, Span, TokenStream, TokenTree};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::spanned::Spanned;
+use syn::{
+    parse_str,
+    visit_mut::{self, VisitMut},
+    Ident, PathArguments, Type, TypePath,
+};
 
 use crate::enum_dispatch_item::EnumDispatchItem;
 use crate::enum_dispatch_variant::EnumDispatchVariant;
@@ -14,66 +21,257 @@ use crate::syn_utils::plain_identifier_expr;
 /// arms. For simplicity's sake, the field is bound to this name everywhere it's generated.
 const FIELDNAME: &str = "inner";
 
+pub fn push_enum_conversion_impls(
+    stream: &mut proc_macro2::TokenStream,
+    enumname: &syn::Ident,
+    enumvariants: &[&EnumDispatchVariant],
+    generics: &syn::Generics,
+) {
+    push_from_impls(stream, enumname, enumvariants, generics);
+    push_try_into_impls(stream, enumname, enumvariants, generics);
+}
+
+// fn get_generic_param_mapping<'a>(
+//     generics: &'a syn::Generics,
+//     trait_params: &'a [proc_macro2::TokenStream],
+// ) -> impl Iterator<Item = (syn::Ident, proc_macro2::TokenStream)> + 'a {
+//     generics
+//         .params
+//         .iter()
+//         .zip(trait_params.iter())
+//         .for_each(|(generic_param, trait_param)| {
+//             let ident = match generic_param {
+//                 syn::GenericParam::Type(type_param) => type_param.ident.clone(),
+//                 syn::GenericParam::Const(const_param) => const_param.ident.clone(),
+//                 syn::GenericParam::Lifetime(_lifetime_def) => {
+//                     panic!("Lifetime generics in #[enum_dispatch(...)] are not supported")
+//                 }
+//             };
+//             (ident, trait_param.clone())
+//         })
+// }
+
+struct ParamSubst {
+    // pub map: HashMap<Ident, GenericArgument>,
+    pub type_map: HashMap<Ident, Type>,
+}
+
+impl ParamSubst {
+    fn new(generics: &syn::Generics, trait_params: &[String]) -> Self {
+        let mut type_map = HashMap::new();
+        generics
+            .params
+            .iter()
+            .zip(trait_params.iter())
+            .for_each(|(generic_param, trait_param)| match generic_param {
+                syn::GenericParam::Type(type_param) => {
+                    let ident = type_param.ident.clone();
+                    let t = parse_str::<Type>(trait_param).expect("parse type failed");
+                    // let t = GenericArgument::Type(t);
+                    type_map.insert(ident, t);
+                }
+                syn::GenericParam::Const(_const_param) => {
+                    // let ident = const_param.ident.clone();
+                    // let e = parse_str::<Expr>(trait_param).expect("parse const failed");
+                    // let e = GenericArgument::Const(e);
+
+                    // (ident, e)
+                    panic!("Const generics in #[enum_dispatch(...)] are not supported")
+                }
+                syn::GenericParam::Lifetime(_lifetime_def) => {
+                    panic!("Lifetime generics in #[enum_dispatch(...)] are not supported")
+                }
+            });
+        Self { type_map }
+    }
+
+    fn empty() -> Self {
+        Self {
+            type_map: HashMap::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.type_map.is_empty()
+    }
+
+    fn map_type_param(&self, ident: &Ident) -> Option<&Type> {
+        self.type_map.get(ident)
+    }
+}
+
+// TODO: 现在没有处理遮蔽
+impl VisitMut for ParamSubst {
+    // fn visit_generic_argument_mut(&mut self, i: &mut syn::GenericArgument) {
+    //     visit_mut::visit_generic_argument_mut(self, i);
+    // }
+
+    fn visit_type_mut(&mut self, i: &mut Type) {
+        visit_mut::visit_type_mut(self, i);
+
+        let Type::Path(TypePath { qself, path }) = i else {
+            return;
+        };
+
+        if qself.is_none() {
+            // leading_colon means the path starts with ::, so it can't be a single-segment path referring to a type parameter
+            if path.leading_colon.is_some() {
+                return;
+            }
+            let seg = &mut path.segments[0];
+            // generics cannot be type constructor
+            if !matches!(seg.arguments, PathArguments::None) {
+                return;
+            }
+
+            if let Some(arg) = self.map_type_param(&seg.ident) {
+                if path.segments.len() == 1 {
+                    *i = arg.clone();
+                } else {
+                    if let Type::Path(arg_tp) = arg {
+                        let mut new_path = arg_tp.path.clone();
+                        new_path
+                            .segments
+                            .extend(path.segments.iter().skip(1).cloned());
+                        *i = Type::Path(TypePath {
+                            qself: None,
+                            path: new_path,
+                        });
+                    } else {
+                        // not supported yet
+                        panic!(
+                            "Only type parameters can be substituted in trait method signatures"
+                        );
+                    }
+                }
+            }
+        }
+        // no need to handle qself, as its type will be visited recursively
+    }
+}
+
+pub fn get_enum_info(
+    enum_def: &EnumDispatchItem,
+) -> (&syn::Ident, Vec<&EnumDispatchVariant>, &syn::Generics) {
+    let enumname = &enum_def.ident;
+    let enumvariants: Vec<&EnumDispatchVariant> = enum_def.variants.iter().collect();
+    let generics = &enum_def.generics;
+    (enumname, enumvariants, generics)
+}
+
+pub fn respan(ts: TokenStream, span: Span) -> TokenStream {
+    ts.into_iter()
+        .map(|tt| match tt {
+            TokenTree::Group(g) => {
+                let mut ng = Group::new(g.delimiter(), respan(g.stream(), span));
+                ng.set_span(span);
+                TokenTree::Group(ng)
+            }
+            TokenTree::Ident(mut i) => {
+                i.set_span(span);
+                TokenTree::Ident(i)
+            }
+            TokenTree::Punct(mut p) => {
+                p.set_span(span);
+                TokenTree::Punct(p)
+            }
+            TokenTree::Literal(mut l) => {
+                l.set_span(span);
+                TokenTree::Literal(l)
+            }
+        })
+        .collect()
+}
+
 /// Implements the specified trait for the given enum definition, assuming the trait definition is
 /// already present in local storage.
-pub fn add_enum_impls(
-    enum_def: EnumDispatchItem,
-    traitdef: syn::ItemTrait,
-) -> proc_macro2::TokenStream {
-    let traitname = traitdef.ident;
-    let traitfns = traitdef.items;
+pub fn push_enum_impls(
+    stream: &mut proc_macro2::TokenStream,
+    trait_def: &syn::ItemTrait,
+    trait_args: Vec<String>,
+    enumname: &syn::Ident,
+    enumvariants: &[&EnumDispatchVariant],
+    enumgenerics: &syn::Generics,
+) {
+    let traitname = &trait_def.ident;
+    let traitfns = &trait_def.items;
 
     let (generic_impl_constraints, enum_type_generics, where_clause) =
-        enum_def.generics.split_for_impl();
-    let (_, trait_type_generics, _) = traitdef.generics.split_for_impl();
+        enumgenerics.split_for_impl();
+    let (_, trait_type_generics, _) = trait_def.generics.split_for_impl();
 
-    let enumname = &enum_def.ident.to_owned();
+    // let generic_span = generic_impl_constraints.span();
+    // eprintln!("generic_span: {:?}", generic_span);
+
+    let (trait_type_generics, mut subst) = if trait_args.is_empty() {
+        let trait_type_generics = trait_type_generics.as_turbofish();
+        (trait_type_generics.to_token_stream(), ParamSubst::empty())
+    } else {
+        assert_eq!(
+            trait_args.len(),
+            trait_def.generics.params.len(),
+            "The number of generic parameters specified in #[enum_dispatch(...)] must match the number of generic parameters in the trait definition"
+        );
+
+        let mapping = ParamSubst::new(&trait_def.generics, &trait_args);
+
+        let params: Vec<proc_macro2::TokenStream> = trait_args
+            .into_iter()
+            .map(|s| s.parse().expect("trait_type_generics tokenize failed"))
+            .collect();
+
+        (quote! {   ::< #( #params ),* > }, mapping)
+    };
+
+    // eprintln!("trait_type_generics: {:?}", trait_type_generics);
+    // eprintln!("trait_type_generics span: {:?}", trait_type_generics.span());
+
+    let trait_type_generics: Option<syn::AngleBracketedGenericArguments> =
+        if trait_type_generics.is_empty() {
+            None
+        } else {
+            let args: syn::AngleBracketedGenericArguments =
+                syn::parse2(trait_type_generics).expect("trait_type_generics parse failed");
+            // args.colon2_token = Some(Default::default());
+            // eprintln!("args_span: {:?}", args.span());
+            Some(args)
+        };
+
+    // TODO: #trait_type_generics -> real type generics specified by enum attributes
+
+    // BREAKING CHANGE: trait_type_generics -> trait_params
     let trait_impl = quote! {
         impl #generic_impl_constraints #traitname #trait_type_generics for #enumname #enum_type_generics #where_clause {
 
         }
     };
-    let mut trait_impl: syn::ItemImpl = syn::parse(trait_impl.into()).unwrap();
+    // let trait_impl = respan(trait_impl, Span::mixed_site());
+    let mut trait_impl: syn::ItemImpl = syn::parse2(trait_impl).expect("trait_impl parse failed");
 
-    trait_impl.unsafety = traitdef.unsafety;
-
-    let variants: Vec<&EnumDispatchVariant> = enum_def.variants.iter().collect();
+    trait_impl.unsafety = trait_def.unsafety;
 
     for trait_fn in traitfns {
-        trait_impl.items.push(create_trait_match(
-            trait_fn,
-            &trait_type_generics,
-            &traitname,
-            &enum_def.ident,
-            &variants,
-        ));
+        match trait_fn {
+            syn::TraitItem::Fn(trait_fn) => {
+                let mut trait_fn = trait_fn.to_owned();
+                if !subst.is_empty() {
+                    subst.visit_trait_item_fn_mut(&mut trait_fn);
+                }
+                trait_impl.items.push(create_trait_match(
+                    trait_fn,
+                    &trait_type_generics,
+                    &traitname,
+                    enumname,
+                    enumvariants,
+                ));
+            }
+            _ => {
+                panic!("Only trait methods can be implemented in #[enum_dispatch(...)]")
+            }
+        }
     }
 
-    let mut impls = proc_macro2::TokenStream::new();
-
-    // Only generate From impls once per enum_def
-    if !cache::conversion_impls_def_by_enum(
-        &enum_def.ident,
-        enum_def.generics.type_params().count(),
-    ) {
-        let from_impls = generate_from_impls(&enum_def.ident, &variants, &enum_def.generics);
-        for from_impl in from_impls.iter() {
-            from_impl.to_tokens(&mut impls);
-        }
-
-        let try_into_impls =
-            generate_try_into_impls(&enum_def.ident, &variants, &trait_impl.generics);
-        for try_into_impl in try_into_impls.iter() {
-            try_into_impl.to_tokens(&mut impls);
-        }
-        cache::cache_enum_conversion_impls_defined(
-            enum_def.ident.clone(),
-            enum_def.generics.type_params().count(),
-        );
-    }
-
-    trait_impl.to_tokens(&mut impls);
-    impls
+    trait_impl.to_tokens(stream);
 }
 
 /// Returns whether or not an attribute from an enum variant should be applied to other usages of
@@ -82,84 +280,102 @@ fn use_attribute(attr: &&syn::Attribute) -> bool {
     attr.path().is_ident("cfg")
 }
 
-/// Generates impls of core::convert::From for each enum variant.
-fn generate_from_impls(
-    enumname: &syn::Ident,
-    enumvariants: &[&EnumDispatchVariant],
-    generics: &syn::Generics,
-) -> Vec<syn::ItemImpl> {
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    enumvariants
-        .iter()
-        .map(|variant| {
-            let variant_name = &variant.ident;
-            let variant_type = &variant.ty;
-            let attributes = &variant.attrs.iter().filter(use_attribute).collect::<Vec<_>>();
-            let impl_block = quote! {
-                #(#attributes)*
-                impl #impl_generics ::core::convert::From<#variant_type> for #enumname #ty_generics #where_clause {
-                    fn from(v: #variant_type) -> #enumname #ty_generics {
-                        #enumname::#variant_name(v)
-                    }
-                }
-            };
-            syn::parse(impl_block.into()).unwrap()
-        }).collect()
+#[inline]
+fn filtered_attrs<'a>(
+    attrs: &'a [syn::Attribute],
+) -> impl Iterator<Item = &'a syn::Attribute> + Clone {
+    // slice::Iter 是 Clone，函数指针也是 Copy/Clone，所以整个 Filter 也 Clone
+    attrs.iter().filter(use_attribute)
 }
 
-/// Generates impls of core::convert::TryInto for each enum variant.
-fn generate_try_into_impls(
+/// Generates impls of core::convert::From for each enum variant.
+fn push_from_impls(
+    stream: &mut proc_macro2::TokenStream,
     enumname: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
     generics: &syn::Generics,
-) -> Vec<syn::ItemImpl> {
+) {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    enumvariants
-        .iter()
-        .enumerate()
-        .map(|(i, variant)| {
-            let variant_name = &variant.ident;
-            let variant_type = &variant.ty;
-            let attributes = &variant.attrs.iter().filter(use_attribute).collect::<Vec<_>>();
 
-            // Instead of making a specific match arm for each of the other variants we could just
-            // use a catch-all wildcard, but doing it this way means we get nicer error messages
-            // that say what the wrong variant is. It also degrades nicely in the case of a single
-            // variant enum so we don't get an unsightly "unreachable pattern" warning.
-            let other = enumvariants
-                .iter()
-                .enumerate()
-                .filter_map(
-                    |(j, other)| if i != j { Some(other) } else { None });
-            let other_attributes = other
-                .clone()
-                .map(|other| {
-                    let attrs = other.attrs.iter().filter(use_attribute);
-                    quote! { #(#attrs)* }
-                });
-            let other_idents = other
-                .map(|other| other.ident.clone());
-            let from_str = other_idents.clone().map(|ident| ident.to_string());
-            let to_str = core::iter::repeat(variant_name.to_string());
-            let repeated = core::iter::repeat(&enumname);
+    for v in enumvariants {
+        let variant_ident = &v.ident;
+        let variant_ty = &v.ty;
+        let attrs = filtered_attrs(v.attrs.as_ref());
 
-            let impl_block = quote! {
-                #(#attributes)*
-                impl #impl_generics ::core::convert::TryInto<#variant_type> for #enumname #ty_generics #where_clause {
-                    type Error = &'static str;
-                    fn try_into(self) -> ::core::result::Result<#variant_type, <Self as ::core::convert::TryInto<#variant_type>>::Error> {
-                        match self {
-                            #enumname::#variant_name(v) => {Ok(v)},
-                            #(  #other_attributes
-                                #repeated::#other_idents(v) => {
-                                Err(concat!("Tried to convert variant ",
-                                            #from_str, " to ", #to_str))}    ),*
-                        }
+        stream.extend(quote! {
+            #(#attrs)*
+            impl #impl_generics ::core::convert::From<#variant_ty>
+                for #enumname #ty_generics #where_clause
+            {
+                #[inline]
+                fn from(v: #variant_ty) -> #enumname #ty_generics {
+                    #enumname::#variant_ident(v)
+                }
+            }
+        });
+    }
+}
+
+fn push_try_into_impls(
+    stream: &mut proc_macro2::TokenStream,
+    enumname: &syn::Ident,
+    enumvariants: &[&EnumDispatchVariant],
+    generics: &syn::Generics,
+) {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    // calculate ident_str for each variant, to avoid doing it multiple times in the loop
+    let ident_strs: Vec<String> = enumvariants.iter().map(|v| v.ident.to_string()).collect();
+
+    for (i, v) in enumvariants.iter().enumerate() {
+        let variant_ident = &v.ident;
+        let variant_ty = &v.ty;
+        let attrs = filtered_attrs(v.attrs.as_ref());
+
+        // 目标 variant 名字只算一次
+        let to_str = &ident_strs[i];
+
+        // 生成 other arms：单层循环拼 TokenStream，避免多次迭代/clone/collect
+        let mut other_arms = proc_macro2::TokenStream::new();
+        for (j, other) in enumvariants.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+
+            let other_ident = &other.ident;
+            let other_attrs = filtered_attrs(other.attrs.as_ref());
+            let from_str = &ident_strs[j];
+
+            other_arms.extend(quote! {
+                #(#other_attrs)*
+                #enumname::#other_ident(v) => {
+                    Err(concat!("Tried to convert variant ", #from_str, " to ", #to_str))
+                },
+            });
+        }
+
+        stream.extend(quote! {
+            #(#attrs)*
+            impl #impl_generics ::core::convert::TryInto<#variant_ty>
+                for #enumname #ty_generics #where_clause
+            {
+                type Error = &'static str;
+
+                #[inline]
+                fn try_into(
+                    self
+                ) -> ::core::result::Result<
+                    #variant_ty,
+                    <Self as ::core::convert::TryInto<#variant_ty>>::Error
+                > {
+                    match self {
+                        #enumname::#variant_ident(v) => Ok(v),
+                        #other_arms
                     }
                 }
-            };
-            syn::parse(impl_block.into()).unwrap()
-        }).collect()
+            }
+        });
+    }
 }
 
 /// Used to keep track of the 'self' arguments in a trait's function signature.
@@ -220,7 +436,7 @@ fn extract_fn_args(
 /// implementations.
 fn create_trait_fn_call(
     trait_method: &syn::TraitItemFn,
-    trait_generics: &syn::TypeGenerics,
+    trait_generics: &Option<syn::AngleBracketedGenericArguments>,
     trait_name: &syn::Ident,
 ) -> syn::Expr {
     let trait_args = trait_method.to_owned().sig.inputs;
@@ -245,7 +461,11 @@ fn create_trait_fn_call(
                 );
             } else {
                 let method_name = &trait_method.sig.ident;
-                let trait_turbofish = trait_generics.as_turbofish();
+                if let Some(trait_generics) = trait_generics {
+                    assert!(trait_generics.colon2_token.is_some());
+                }
+
+                // let trait_turbofish = trait_generics.as_turbofish();
 
                 // It's not allowed to specify late bound lifetime arguments for a function call.
                 // Theoretically, it should be possible to determine from a function signature
@@ -264,7 +484,7 @@ fn create_trait_fn_call(
                 let method_turbofish = method_type_generics.as_turbofish();
 
                 Box::new(
-                    syn::parse_quote! { #trait_name #trait_turbofish::#method_name #method_turbofish },
+                    syn::parse_quote! { #trait_name #trait_generics::#method_name #method_turbofish },
                 )
             }
         },
@@ -288,7 +508,7 @@ fn create_trait_fn_call(
 /// binding to their single field and calling the provided trait method on each.
 fn create_match_expr(
     trait_method: &syn::TraitItemFn,
-    trait_generics: &syn::TypeGenerics,
+    trait_generics: &Option<syn::AngleBracketedGenericArguments>,
     trait_name: &syn::Ident,
     enum_name: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
@@ -325,10 +545,7 @@ fn create_match_expr(
             }
 
             let variant_name = &variant.ident;
-            let attrs = variant
-                .attrs
-                .iter()
-                .filter(use_attribute)
+            let attrs = filtered_attrs(variant.attrs.as_ref())
                 .cloned()
                 .collect::<Vec<_>>();
             syn::Arm {
@@ -360,46 +577,42 @@ fn create_match_expr(
 
 /// Builds an implementation of the given trait function for the given enum type.
 fn create_trait_match(
-    trait_item: syn::TraitItem,
-    trait_generics: &syn::TypeGenerics,
+    trait_method: syn::TraitItemFn,
+    trait_generics: &Option<syn::AngleBracketedGenericArguments>,
     trait_name: &syn::Ident,
     enum_name: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
 ) -> syn::ImplItem {
-    match trait_item {
-        syn::TraitItem::Fn(mut trait_method) => {
-            identify_signature_arguments(&mut trait_method.sig);
+    let mut trait_method = trait_method.to_owned();
+    identify_signature_arguments(&mut trait_method.sig);
 
-            let match_expr = create_match_expr(
-                &trait_method,
-                trait_generics,
-                trait_name,
-                enum_name,
-                enumvariants,
-            );
+    let match_expr = create_match_expr(
+        &trait_method,
+        trait_generics,
+        trait_name,
+        enum_name,
+        enumvariants,
+    );
 
-            let mut impl_attrs = trait_method.attrs.clone();
-            // Inline impls - #[inline] is never already specified in a trait method signature
-            impl_attrs.push(syn::Attribute {
-                pound_token: Default::default(),
-                style: syn::AttrStyle::Outer,
-                bracket_token: Default::default(),
-                meta: syn::Meta::Path(syn::parse_str("inline").unwrap()),
-            });
+    let mut impl_attrs = trait_method.attrs.clone();
+    // Inline impls - #[inline] is never already specified in a trait method signature
+    impl_attrs.push(syn::Attribute {
+        pound_token: Default::default(),
+        style: syn::AttrStyle::Outer,
+        bracket_token: Default::default(),
+        meta: syn::Meta::Path(syn::parse_str("inline").unwrap()),
+    });
 
-            syn::ImplItem::Fn(syn::ImplItemFn {
-                attrs: impl_attrs,
-                vis: syn::Visibility::Inherited,
-                defaultness: None,
-                sig: trait_method.sig,
-                block: syn::Block {
-                    brace_token: Default::default(),
-                    stmts: vec![syn::Stmt::Expr(match_expr, None)],
-                },
-            })
-        }
-        _ => panic!("Unsupported trait item"),
-    }
+    syn::ImplItem::Fn(syn::ImplItemFn {
+        attrs: impl_attrs,
+        vis: syn::Visibility::Inherited,
+        defaultness: None,
+        sig: trait_method.sig,
+        block: syn::Block {
+            brace_token: Default::default(),
+            stmts: vec![syn::Stmt::Expr(match_expr, None)],
+        },
+    })
 }
 
 /// All method arguments that appear in trait method signatures must be passed through to the

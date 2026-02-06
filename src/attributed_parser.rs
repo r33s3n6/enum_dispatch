@@ -11,6 +11,7 @@ pub enum ParsedItem {
 
 /// Parses any syntax item that was annotated with the `enum_dispatch` attribute and returns its
 /// itemized results.
+/// This expanded the original enum
 pub fn parse_attributed(item: proc_macro2::TokenStream) -> Result<ParsedItem, ()> {
     if let Ok(enumdef) = syn::parse2(item.clone()) {
         Ok(ParsedItem::EnumDispatch(enumdef))

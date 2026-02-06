@@ -7,7 +7,7 @@ pub enum SupportedGenericArg {
     /// A `_` type.
     Inferred,
     /// A named generic argument, e.g. `T`.
-    Identifier(proc_macro2::Ident),
+    Path(syn::Path),
     /// A const generic char, e.g. `'a'`.
     ConstChar(syn::LitChar),
     /// A const generic byte, e.g. `b'a'`.
@@ -16,6 +16,19 @@ pub enum SupportedGenericArg {
     ConstInt(syn::LitInt),
     /// A const generic integer, e.g. `true`.
     ConstBool(syn::LitBool),
+}
+
+impl quote::ToTokens for SupportedGenericArg {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            Self::Inferred => tokens.extend(quote::quote! { _ }),
+            Self::Path(path) => path.to_tokens(tokens),
+            Self::ConstChar(c) => c.to_tokens(tokens),
+            Self::ConstByte(b) => b.to_tokens(tokens),
+            Self::ConstInt(i) => i.to_tokens(tokens),
+            Self::ConstBool(b) => b.to_tokens(tokens),
+        }
+    }
 }
 
 /// Represents any single generic argument from `#[enum_dispatch(Ty<...>)]` that can _not_ be
@@ -101,11 +114,12 @@ pub fn convert_to_supported_generic(
 
     match generic_arg {
         syn::GenericArgument::Type(syn::Type::Path(t)) if t.qself.is_none() => {
-            if let Some(ident) = t.path.get_ident() {
-                Ok(SupportedGenericArg::Identifier(ident.clone()))
-            } else {
-                Err((UnsupportedGenericArg::NonIdentifierType, span))
-            }
+            Ok(SupportedGenericArg::Path(t.path.clone()))
+            // if let Some(ident) = t.path.get_ident() {
+            //     Ok(SupportedGenericArg::Identifier(ident.clone()))
+            // } else {
+            //     Err((UnsupportedGenericArg::NonIdentifierType, span))
+            // }
         }
         syn::GenericArgument::Type(syn::Type::Infer(_)) => Ok(SupportedGenericArg::Inferred),
         syn::GenericArgument::Type(_) => Err((UnsupportedGenericArg::NonIdentifierType, span)),

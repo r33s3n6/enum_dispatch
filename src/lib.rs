@@ -325,8 +325,8 @@
 
 extern crate proc_macro;
 
-use proc_macro2::TokenStream;
-use quote::{ToTokens, TokenStreamExt};
+use proc_macro2::{TokenStream, TokenTree};
+use quote::ToTokens;
 
 /// Used for converting a macro input into an ItemTrait or an EnumDispatchItem.
 mod attributed_parser;
@@ -347,8 +347,9 @@ mod supported_generics;
 /// Convenience methods for constructing `syn` types.
 mod syn_utils;
 
-use crate::expansion::add_enum_impls;
-use crate::supported_generics::{convert_to_supported_generic, num_supported_generics};
+use crate::cache::UniqueItemId;
+use crate::expansion::{push_enum_conversion_impls, push_enum_impls};
+use crate::supported_generics::convert_to_supported_generic;
 
 /// Annotating a trait or enum definition with an `#[enum_dispatch]` attribute will register it
 /// with the enum_dispatch library, allowing it to be used to generate impl blocks elsewhere.
@@ -363,7 +364,10 @@ use crate::supported_generics::{convert_to_supported_generic, num_supported_gene
 /// current scope. To force individual variants to use a custom name when expanded, each variant
 /// can also take the form of a normal tuple-style enum variant with a single field.
 #[proc_macro_attribute]
-pub fn enum_dispatch(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn enum_dispatch(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
     enum_dispatch2(attr.into(), item.into()).into()
 }
 
@@ -373,40 +377,49 @@ pub fn enum_dispatch(attr: proc_macro::TokenStream, item: proc_macro::TokenStrea
 /// removes the need for conversions everywhere.
 fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
     let new_block = attributed_parser::parse_attributed(item.clone()).unwrap();
-    let mut expanded = match &new_block {
+    let (uid, mut expanded) = match &new_block {
         attributed_parser::ParsedItem::Trait(traitdef) => {
-            cache::cache_trait(traitdef.to_owned());
-            item
+            (cache::cache_trait(traitdef.to_owned()), item)
         }
-        attributed_parser::ParsedItem::EnumDispatch(enumdef) => {
-            cache::cache_enum_dispatch(enumdef.clone());
-            syn::ItemEnum::from(enumdef.to_owned())
-                .into_token_stream()
-        }
+        attributed_parser::ParsedItem::EnumDispatch(enumdef) => (
+            cache::cache_enum_dispatch(enumdef.clone()),
+            syn::ItemEnum::from(enumdef.to_owned()).into_token_stream(),
+        ),
     };
     // If the attributes are non-empty, the new block should be "linked" to the listed definitions.
     // Those definitions may or may not have been cached yet.
     // If one is not cached yet, the link will be pushed into the cache, and impl generation will
     // be deferred until the missing definition is encountered.
     // For now, we assume it is already cached.
-    if !attr.is_empty() {
+    let new_edges = if attr.is_empty() {
+        Vec::new()
+    } else {
         let attr_parse_result = syn::parse2::<enum_dispatch_arg_list::EnumDispatchArgList>(attr)
             .expect("Could not parse arguments to `#[enum_dispatch(...)]`.")
             .arg_list
             .into_iter()
-            .try_for_each(|p| {
+            .map(|p| {
                 if p.leading_colon.is_some() || p.segments.len() != 1 {
                     panic!("Paths in `#[enum_dispatch(...)]` are not supported.");
                 }
                 let syn::PathSegment {
                     ident: attr_name,
-                    arguments: attr_generics
+                    arguments: attr_generics,
                 } = p.segments.last().unwrap();
-                let attr_generics = match attr_generics.clone() {
+                let generic_args = match attr_generics.clone() {
                     syn::PathArguments::None => vec![],
                     syn::PathArguments::AngleBracketed(args) => {
-                        assert!(args.colon2_token.is_none());
-                        match args.args.iter().map(convert_to_supported_generic).collect::<Result<Vec<_>, _>>() {
+                        // assert!(
+                        //     args.colon2_token.is_none(),
+                        //     "args: {:?} should not have a colon",
+                        //     args
+                        // );
+                        match args
+                            .args
+                            .iter()
+                            .map(convert_to_supported_generic)
+                            .collect::<Result<Vec<_>, _>>()
+                        {
                             Ok(v) => v,
                             Err((unsupported, span)) => {
                                 let error_string = unsupported.to_string();
@@ -416,44 +429,124 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
                             }
                         }
                     }
-                    syn::PathArguments::Parenthesized(_) => panic!("Expected angle bracketed generic arguments, found parenthesized arguments"),
+                    syn::PathArguments::Parenthesized(_) => panic!(
+                        "Expected angle bracketed generic arguments, found parenthesized arguments"
+                    ),
                 };
-                match &new_block {
-                    attributed_parser::ParsedItem::Trait(traitdef) => {
-                        let supported_generics = num_supported_generics(&traitdef.generics);
-                        cache::defer_link((attr_name, attr_generics.len()), (&traitdef.ident, supported_generics))
-                    }
-                    attributed_parser::ParsedItem::EnumDispatch(enumdef) => {
-                        let supported_generics = num_supported_generics(&enumdef.generics);
-                        cache::defer_link((attr_name, attr_generics.len()), (&enumdef.ident, supported_generics))
-                    }
-                }
-                Ok(())
-            });
-        if let Err(e) = attr_parse_result {
-            return e;
+
+                let target_uid = UniqueItemId::new(attr_name.to_string(), generic_args.len());
+                // not saving generic args for trait
+                let generic_args =
+                    if matches!(new_block, attributed_parser::ParsedItem::EnumDispatch(_)) {
+                        generic_args
+                            .iter()
+                            .map(|g| g.to_token_stream().to_string())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                Ok(cache::LinkRef {
+                    target: target_uid,
+                    generic_args,
+                })
+            })
+            .collect();
+        match attr_parse_result {
+            Err(error_tokens) => return error_tokens.into(),
+
+            Ok(edges) => edges,
         }
     };
     // It would be much simpler to just always retrieve all definitions from the cache. However,
     // span information is not stored in the cache. Saving the newly retrieved definition prevents
     // *all* of the span information from being lost.
-    match new_block {
-        attributed_parser::ParsedItem::Trait(traitdef) => {
-            let supported_generics = num_supported_generics(&traitdef.generics);
-            let additional_enums =
-                cache::fulfilled_by_trait(&traitdef.ident, supported_generics);
-            for enumdef in additional_enums {
-                expanded.append_all(add_enum_impls(enumdef, traitdef.clone()));
+    match &new_block {
+        attributed_parser::ParsedItem::Trait(trait_def) => {
+            let ready_edges = cache::ingest_trait_enum_edges(&uid, new_edges);
+            for edge in ready_edges {
+                let enum_def = cache::get_enum_def(&edge.target);
+
+                let (enumname, enumvariants, enumgenerics) = expansion::get_enum_info(&enum_def);
+
+                push_enum_impls(
+                    &mut expanded,
+                    trait_def,
+                    edge.generic_args,
+                    enumname,
+                    enumvariants.as_slice(),
+                    enumgenerics,
+                );
             }
         }
-        attributed_parser::ParsedItem::EnumDispatch(enumdef) => {
-            let supported_generics = num_supported_generics(&enumdef.generics);
-            let additional_traits =
-                cache::fulfilled_by_enum(&enumdef.ident, supported_generics);
-            for traitdef in additional_traits {
-                expanded.append_all(add_enum_impls(enumdef.clone(), traitdef));
+        attributed_parser::ParsedItem::EnumDispatch(enum_def) => {
+            let ready_edges = cache::ingest_enum_trait_edges(&uid, new_edges);
+
+            let (enumname, enumvariants, enumgenerics) = expansion::get_enum_info(&enum_def);
+
+            for edge in ready_edges {
+                let trait_def = cache::get_trait_def(&edge.target);
+                push_enum_impls(
+                    &mut expanded,
+                    &trait_def,
+                    edge.generic_args,
+                    enumname,
+                    enumvariants.as_slice(),
+                    enumgenerics,
+                );
             }
+
+            if cache::set_if_conversion_not_defined(uid) {
+                // add impls for From for each variant
+                push_enum_conversion_impls(
+                    &mut expanded,
+                    enumname,
+                    enumvariants.as_slice(),
+                    enumgenerics,
+                );
+            }
+        }
+    };
+
+    // expanded = expansion::respan(expanded, proc_macro2::Span::mixed_site());
+    // dump(&expanded, "enum_dispatch expanded");
+    expanded
+}
+
+// lock
+static DUMP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn dump(ts: &TokenStream, label: &str) {
+    let _guard = DUMP_LOCK.lock().unwrap();
+    eprintln!("== {label} ==");
+    for tt in ts.clone() {
+        dump_tt(&tt, 0);
+    }
+}
+
+fn dump_tt(tt: &TokenTree, indent: usize) {
+    let pad = "  ".repeat(indent);
+    match tt {
+        TokenTree::Group(g) => {
+            eprintln!("{pad}Group({:?}) span={:?}", g.delimiter(), g.span());
+            if let Some(txt) = g.span().source_text() {
+                eprintln!("{pad}  source_text={txt:?}");
+            }
+            for inner in g.stream() {
+                dump_tt(&inner, indent + 1);
+            }
+        }
+        TokenTree::Ident(i) => {
+            eprintln!("{pad}Ident({}) span={:?}", i, i.span());
+            if let Some(txt) = i.span().source_text() {
+                eprintln!("{pad}  source_text={txt:?}");
+            }
+        }
+        TokenTree::Punct(p) => {
+            eprintln!("{pad}Punct({}) span={:?}", p.as_char(), p.span());
+        }
+        TokenTree::Literal(l) => {
+            eprintln!("{pad}Literal({}) span={:?}", l, l.span());
         }
     }
-    expanded
 }
