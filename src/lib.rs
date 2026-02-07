@@ -325,7 +325,7 @@
 
 extern crate proc_macro;
 
-use proc_macro2::{TokenStream, TokenTree};
+use proc_macro2::TokenStream;
 use quote::ToTokens;
 
 /// Used for converting a macro input into an ItemTrait or an EnumDispatchItem.
@@ -532,45 +532,5 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // expanded = expansion::respan(expanded, proc_macro2::Span::mixed_site());
-    // dump(&expanded, "enum_dispatch expanded");
     expanded
-}
-
-// lock
-static DUMP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn dump(ts: &TokenStream, label: &str) {
-    let _guard = DUMP_LOCK.lock().unwrap();
-    eprintln!("== {label} ==");
-    for tt in ts.clone() {
-        dump_tt(&tt, 0);
-    }
-}
-
-fn dump_tt(tt: &TokenTree, indent: usize) {
-    let pad = "  ".repeat(indent);
-    match tt {
-        TokenTree::Group(g) => {
-            eprintln!("{pad}Group({:?}) span={:?}", g.delimiter(), g.span());
-            if let Some(txt) = g.span().source_text() {
-                eprintln!("{pad}  source_text={txt:?}");
-            }
-            for inner in g.stream() {
-                dump_tt(&inner, indent + 1);
-            }
-        }
-        TokenTree::Ident(i) => {
-            eprintln!("{pad}Ident({}) span={:?}", i, i.span());
-            if let Some(txt) = i.span().source_text() {
-                eprintln!("{pad}  source_text={txt:?}");
-            }
-        }
-        TokenTree::Punct(p) => {
-            eprintln!("{pad}Punct({}) span={:?}", p.as_char(), p.span());
-        }
-        TokenTree::Literal(l) => {
-            eprintln!("{pad}Literal({}) span={:?}", l, l.span());
-        }
-    }
 }

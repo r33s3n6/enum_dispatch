@@ -7,7 +7,7 @@
 //! statically. Unfortunately, doing so strips any related `Span` information, preventing error
 //! messages from being as informative as they could be. For now, it seems this is the best option
 //! available.
-use proc_macro2::{Ident, TokenStream};
+use proc_macro2::Ident;
 use quote::ToTokens;
 
 use once_cell::sync::Lazy;

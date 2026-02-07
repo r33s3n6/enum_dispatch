@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 // use crate::cache;
-use proc_macro2::{Group, Span, TokenStream, TokenTree};
-use quote::{quote, quote_spanned, ToTokens};
+use proc_macro2::{Span, TokenStream};
+use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
 use syn::{
     parse_str,
@@ -22,7 +22,7 @@ use crate::syn_utils::plain_identifier_expr;
 const FIELDNAME: &str = "inner";
 
 pub fn push_enum_conversion_impls(
-    stream: &mut proc_macro2::TokenStream,
+    stream: &mut TokenStream,
     enumname: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
     generics: &syn::Generics,
@@ -140,7 +140,7 @@ pub fn get_enum_info(
 }
 
 pub fn push_trait_def_checker_for_enum(
-    stream: &mut proc_macro2::TokenStream,
+    stream: &mut TokenStream,
     traitname: &syn::Ident,
     trait_args: &[String],
     enumname: &syn::Ident,
@@ -153,7 +153,7 @@ pub fn push_trait_def_checker_for_enum(
         // empty
         quote! {}
     } else {
-        let args: Vec<proc_macro2::TokenStream> = trait_args
+        let args: Vec<TokenStream> = trait_args
             .iter()
             .map(|s| s.parse().expect("trait_type_generics tokenize failed"))
             .collect();
@@ -186,7 +186,7 @@ pub fn push_trait_def_checker_for_enum(
 /// Implements the specified trait for the given enum definition, assuming the trait definition is
 /// already present in local storage.
 pub fn push_enum_impls(
-    stream: &mut proc_macro2::TokenStream,
+    stream: &mut TokenStream,
     trait_def: &syn::ItemTrait,
     trait_args: Vec<String>,
     enumname: &syn::Ident,
@@ -215,7 +215,7 @@ pub fn push_enum_impls(
 
         let mapping = ParamSubst::new(&trait_def.generics, &trait_args);
 
-        let params: Vec<proc_macro2::TokenStream> = trait_args
+        let params: Vec<TokenStream> = trait_args
             .into_iter()
             .map(|s| s.parse().expect("trait_type_generics tokenize failed"))
             .collect();
@@ -290,7 +290,7 @@ fn filtered_attrs<'a>(
 
 /// Generates impls of core::convert::From for each enum variant.
 fn push_from_impls(
-    stream: &mut proc_macro2::TokenStream,
+    stream: &mut TokenStream,
     enumname: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
     generics: &syn::Generics,
@@ -317,7 +317,7 @@ fn push_from_impls(
 }
 
 fn push_try_into_impls(
-    stream: &mut proc_macro2::TokenStream,
+    stream: &mut TokenStream,
     enumname: &syn::Ident,
     enumvariants: &[&EnumDispatchVariant],
     generics: &syn::Generics,
@@ -336,7 +336,7 @@ fn push_try_into_impls(
         let to_str = &ident_strs[i];
 
         // 生成 other arms：单层循环拼 TokenStream，避免多次迭代/clone/collect
-        let mut other_arms = proc_macro2::TokenStream::new();
+        let mut other_arms = TokenStream::new();
         for (j, other) in enumvariants.iter().enumerate() {
             if i == j {
                 continue;
