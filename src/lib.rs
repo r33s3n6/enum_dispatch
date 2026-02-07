@@ -348,7 +348,9 @@ mod supported_generics;
 mod syn_utils;
 
 use crate::cache::UniqueItemId;
-use crate::expansion::{push_enum_conversion_impls, push_enum_impls};
+use crate::expansion::{
+    push_enum_conversion_impls, push_enum_impls, push_trait_def_checker_for_enum,
+};
 use crate::supported_generics::convert_to_supported_generic;
 
 /// Annotating a trait or enum definition with an `#[enum_dispatch]` attribute will register it
@@ -446,6 +448,20 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
                         Vec::new()
                     };
 
+                // Note: 这里不会处理trait->enum link, 因为信息不全
+                match &new_block {
+                    attributed_parser::ParsedItem::EnumDispatch(enum_def) => {
+                        push_trait_def_checker_for_enum(
+                            &mut expanded,
+                            &attr_name,
+                            generic_args.as_ref(),
+                            &enum_def.ident,
+                            &enum_def.generics,
+                        );
+                    }
+                    _ => {}
+                }
+
                 Ok(cache::LinkRef {
                     target: target_uid,
                     generic_args,
@@ -461,6 +477,7 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
     // It would be much simpler to just always retrieve all definitions from the cache. However,
     // span information is not stored in the cache. Saving the newly retrieved definition prevents
     // *all* of the span information from being lost.
+    // FIXME: 因为UniqueItemId是名字，enum名字或trait名字有可能会重复，在考虑是不是应该加一个重名检查
     match &new_block {
         attributed_parser::ParsedItem::Trait(trait_def) => {
             let ready_edges = cache::ingest_trait_enum_edges(&uid, new_edges);
@@ -468,6 +485,11 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let enum_def = cache::get_enum_def(&edge.target);
 
                 let (enumname, enumvariants, enumgenerics) = expansion::get_enum_info(&enum_def);
+
+                // assert!(
+                //     edge.generic_args.is_empty(),
+                //     "Generic arguments on trait attributes are not supported."
+                // );
 
                 push_enum_impls(
                     &mut expanded,
@@ -480,9 +502,11 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
         attributed_parser::ParsedItem::EnumDispatch(enum_def) => {
+            let (enumname, enumvariants, enumgenerics) = expansion::get_enum_info(&enum_def);
+
             let ready_edges = cache::ingest_enum_trait_edges(&uid, new_edges);
 
-            let (enumname, enumvariants, enumgenerics) = expansion::get_enum_info(&enum_def);
+            // BREAKING CHANGE: add checker, must specify all generics if exists
 
             for edge in ready_edges {
                 let trait_def = cache::get_trait_def(&edge.target);

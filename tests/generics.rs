@@ -27,7 +27,7 @@ pub trait Foo<T: Bar> {
     fn do_something(&mut self, val: T);
 }
 
-#[enum_dispatch(Foo)]
+#[enum_dispatch(Foo<T>)]
 pub enum AnyFoo<T: Bar> {
     SuperFoo(SuperFoo<T>),
     UltraFoo(UltraFoo<T>),

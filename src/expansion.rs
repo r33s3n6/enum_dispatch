@@ -31,26 +31,6 @@ pub fn push_enum_conversion_impls(
     push_try_into_impls(stream, enumname, enumvariants, generics);
 }
 
-// fn get_generic_param_mapping<'a>(
-//     generics: &'a syn::Generics,
-//     trait_params: &'a [proc_macro2::TokenStream],
-// ) -> impl Iterator<Item = (syn::Ident, proc_macro2::TokenStream)> + 'a {
-//     generics
-//         .params
-//         .iter()
-//         .zip(trait_params.iter())
-//         .for_each(|(generic_param, trait_param)| {
-//             let ident = match generic_param {
-//                 syn::GenericParam::Type(type_param) => type_param.ident.clone(),
-//                 syn::GenericParam::Const(const_param) => const_param.ident.clone(),
-//                 syn::GenericParam::Lifetime(_lifetime_def) => {
-//                     panic!("Lifetime generics in #[enum_dispatch(...)] are not supported")
-//                 }
-//             };
-//             (ident, trait_param.clone())
-//         })
-// }
-
 struct ParamSubst {
     // pub map: HashMap<Ident, GenericArgument>,
     pub type_map: HashMap<Ident, Type>,
@@ -159,28 +139,48 @@ pub fn get_enum_info(
     (enumname, enumvariants, generics)
 }
 
-pub fn respan(ts: TokenStream, span: Span) -> TokenStream {
-    ts.into_iter()
-        .map(|tt| match tt {
-            TokenTree::Group(g) => {
-                let mut ng = Group::new(g.delimiter(), respan(g.stream(), span));
-                ng.set_span(span);
-                TokenTree::Group(ng)
-            }
-            TokenTree::Ident(mut i) => {
-                i.set_span(span);
-                TokenTree::Ident(i)
-            }
-            TokenTree::Punct(mut p) => {
-                p.set_span(span);
-                TokenTree::Punct(p)
-            }
-            TokenTree::Literal(mut l) => {
-                l.set_span(span);
-                TokenTree::Literal(l)
-            }
-        })
-        .collect()
+pub fn push_trait_def_checker_for_enum(
+    stream: &mut proc_macro2::TokenStream,
+    traitname: &syn::Ident,
+    trait_args: &[String],
+    enumname: &syn::Ident,
+    enumgenerics: &syn::Generics,
+) {
+    let (generic_impl_constraints, enum_type_generics, where_clause) =
+        enumgenerics.split_for_impl();
+
+    let trait_args = if trait_args.is_empty() {
+        // empty
+        quote! {}
+    } else {
+        let args: Vec<proc_macro2::TokenStream> = trait_args
+            .iter()
+            .map(|s| s.parse().expect("trait_type_generics tokenize failed"))
+            .collect();
+        quote! {   < #( #args ),* > }
+    };
+
+    //     const _: () = {
+    //     fn assert_impl<T, U>()
+    //     where
+    //         Foo<T, U>: TraitX<T>,
+    //     {}
+    //     let _ = assert_impl::<T, U>;
+    // };
+    // fn assert_impl < #enum_params , #(#trait_args ,)* #enumname #enum_type_generics : #traitname #trait_args > ()
+    // #where_clause
+    // {}
+    // let _ = assert_impl #trait_args_usage;
+
+    // let enum_params = enumgenerics.params;
+
+    let checker = quote! {
+        const _: () = {
+            trait Check #generic_impl_constraints : #traitname #trait_args #where_clause {}
+            impl #generic_impl_constraints Check #enum_type_generics for #enumname #enum_type_generics #where_clause {}
+        };
+    };
+    checker.to_tokens(stream);
 }
 
 /// Implements the specified trait for the given enum definition, assuming the trait definition is

@@ -1,4 +1,3 @@
-#![feature(box_patterns)]
 use enum_dispatch::enum_dispatch;
 
 struct AppState;
@@ -42,6 +41,7 @@ trait AppAction {
         false
     }
 
+    #[cfg(feature = "nightly")]
     fn format(
         &self,
         (Format::_Raw(max_len) | Format::_Pretty(max_len)): Format,

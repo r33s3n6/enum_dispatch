@@ -327,3 +327,42 @@ mod different_generic_names {
         assert!(literal_expr.walk_children(&mut driver));
     }
 }
+
+mod missing_def {
+
+    /// This test ensures that the compiler error is informative when the trait or enum definition is missing.
+    /// ```compile_fail
+    /// mod test1 {
+    ///     struct A {}
+    ///     struct B {}
+    ///     #[enum_dispatch::enum_dispatch(Foo)]
+    ///     pub enum Any {
+    ///         A,
+    ///         B,
+    ///     }
+    /// }
+    /// ```
+
+    mod test2 {
+        use std::marker::PhantomData;
+
+        struct A<T> {
+            _phantom: PhantomData<T>,
+        }
+        struct B<T> {
+            _phantom: PhantomData<T>,
+        }
+
+        impl<T> Foo2<T> for A<T> {}
+        impl<T> Foo2<T> for B<T> {}
+
+        #[enum_dispatch::enum_dispatch(Foo2<T>)]
+        pub enum Any<T> {
+            A(A<T>),
+            B(B<T>),
+        }
+
+        #[enum_dispatch::enum_dispatch]
+        trait Foo2<T> {}
+    }
+}
