@@ -520,15 +520,18 @@ fn enum_dispatch2(attr: TokenStream, item: TokenStream) -> TokenStream {
                 );
             }
 
-            if cache::set_if_conversion_not_defined(uid) {
-                // add impls for From for each variant
-                push_enum_conversion_impls(
-                    &mut expanded,
-                    enumname,
-                    enumvariants.as_slice(),
-                    enumgenerics,
-                );
-            }
+            // push dummy const block to debug what happened (uid, enumname as string literal
+
+            // if cache::set_if_conversion_not_defined(uid) {
+
+            // add impls for From for each variant
+            push_enum_conversion_impls(
+                &mut expanded,
+                enumname,
+                enumvariants.as_slice(),
+                enumgenerics,
+            );
+            // }
         }
     };
 
