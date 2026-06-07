@@ -42,6 +42,7 @@ static ENUM_DEFS: Lazy<Mutex<HashMap<UniqueItemId, String>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // to support multiple enum_dispatch on enum
+#[allow(dead_code)]
 static ENUM_CONVERSION_IMPLS_DEFS: Lazy<Mutex<HashSet<UniqueItemId>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 
@@ -176,6 +177,7 @@ pub fn get_enum_def(uid: &UniqueItemId) -> enum_dispatch_item::EnumDispatchItem 
         .unwrap()
 }
 
+#[allow(dead_code)]
 pub fn set_if_conversion_not_defined(enum_id: UniqueItemId) -> bool {
     let mut conversion_impls = ENUM_CONVERSION_IMPLS_DEFS.lock().unwrap();
     if conversion_impls.contains(&enum_id) {
